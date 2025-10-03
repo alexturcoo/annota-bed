@@ -1,21 +1,23 @@
 # api/index.py
-import os, io, math, tempfile, uuid, shutil
+import os, io, math, tempfile, uuid, shutil, csv
 from collections import defaultdict, Counter
-
 from flask import Flask, request, jsonify, send_file
-import pandas as pd
-import requests
 
 app = Flask(__name__)
 
-# --- Try to import pysam only if available (works locally / on external host) ---
-try:
-    import pysam
-    HAS_PYSAM = True
-except Exception:
-    HAS_PYSAM = False
+# Detect Vercel / production and FORCE demo mode there
+IS_VERCEL = os.getenv("VERCEL") == "1" or os.getenv("NODE_ENV") == "production"
 
-FLASK_UPSTREAM = os.getenv("FLASK_UPSTREAM")  # e.g., https://your-flask-host.com
+# Only import heavy deps when NOT on Vercel (local dev or your own server)
+HAS_PYSAM = False
+if not IS_VERCEL:
+    try:
+        import pysam  # native dependency; fine locally / external host
+        HAS_PYSAM = True
+        import pandas as pd  # only used in local/real path
+    except Exception:
+        HAS_PYSAM = False
+
 
 # ----------------------- Shared helpers -----------------------
 def parse_bed(file_bytes: bytes):
@@ -40,44 +42,79 @@ def parse_bed(file_bytes: bytes):
 def json_error(msg, code=400):
     return jsonify({"error": msg}), code
 
+
 # ----------------------- Health -----------------------
 @app.get("/health")
 def health():
-    mode = "proxy->upstream" if FLASK_UPSTREAM else ("full-pysam" if HAS_PYSAM else "serverless-demo")
+    if IS_VERCEL:
+        mode = "serverless-demo"
+    else:
+        mode = "full-pysam" if HAS_PYSAM else "demo-fallback-local"
     return {"status": "ok", "mode": mode}
+
 
 # ----------------------- Annotate -----------------------
 @app.post("/annotate")
 def annotate():
-    # 0) If we have an upstream, forward the exact multipart request and return its response
-    if FLASK_UPSTREAM:
-        try:
-            # Forward multipart form to upstream /annotate
-            files = {}
-            for key in ("file", "gtf_bgz", "gtf_tbi"):
-                f = request.files.get(key)
-                if f:
-                    files[key] = (f.filename, f.stream, f.mimetype or "application/octet-stream")
-            data = dict(request.form)  # ambiguities, etc.
-
-            resp = requests.post(f"{FLASK_UPSTREAM.rstrip('/')}/annotate", files=files, data=data, timeout=600)
-            # Pass through JSON or text exactly
-            try:
-                out = resp.json()
-                return jsonify(out), resp.status_code
-            except Exception:
-                return resp.text, resp.status_code, {"Content-Type": resp.headers.get("Content-Type", "text/plain")}
-        except Exception as e:
-            return json_error(f"Proxy to upstream failed: {e}", 502)
-
-    # 1) If pysam is available (local machine / external server), run the real implementation
-    if HAS_PYSAM:
+    """
+    Behavior:
+      - On Vercel (production): always return DEMO results (no pysam, small bundle).
+      - Local dev (not Vercel): if pysam available -> real annotator; else -> demo.
+    """
+    if IS_VERCEL or not HAS_PYSAM:
+        return _annotate_demo()
+    else:
         return _annotate_with_pysam()
 
-    # 2) Otherwise, we are likely on Vercel serverless. Return a friendly demo result.
-    return _annotate_demo()
 
-# ----------------------- Real (pysam) path -----------------------
+# ----------------------- DEMO (serverless-safe) -----------------------
+def _annotate_demo():
+    bed = request.files.get("file")
+    if not bed:
+        return json_error("No BED file uploaded")
+
+    intervals = parse_bed(bed.read())
+
+    # fabricate stable fake annotations so UI works
+    rows = []
+    biotypes = ["protein_coding", "lincRNA", "antisense", "sense_intronic", "processed_transcript"]
+    for i, (c, s, e) in enumerate(intervals):
+        rows.append({
+            "input_chr": c,
+            "input_start": s,
+            "input_end": e,
+            "gene": f"ENSG_FAKE_{i}",
+            "strand": "+" if i % 2 == 0 else "-",
+            "feature_biotype": biotypes[i % len(biotypes)],
+            "ensembl_id": f"ENST_FAKE_{i}",
+            "hugo": f"MOCK{i % 7}",
+            "tx_overlap_pct": 80.0 - (i % 5) * 3,
+            "exon_overlap_pct": 45.0,
+            "cds_overlap_pct": 20.0,
+            "priority_score": 99.0 - i,
+        })
+
+    summary = {
+        "unique_genes": len(set(r["hugo"] for r in rows if r["hugo"])),
+        "by_biotype": dict(Counter(r["feature_biotype"] for r in rows if r["feature_biotype"]))
+    }
+
+    # write CSV using stdlib (avoid pandas in serverless)
+    outpath = os.path.join(tempfile.gettempdir(), "annotations_demo.csv")
+    fieldnames = [
+        "input_chr","input_start","input_end","gene","strand","feature_biotype",
+        "ensembl_id","hugo","tx_overlap_pct","exon_overlap_pct","cds_overlap_pct","priority_score"
+    ]
+    with open(outpath, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k) for k in fieldnames})
+
+    return jsonify({"rows": rows, "summary": summary, "csv_download_path": outpath})
+
+
+# ----------------------- REAL (local pysam) -----------------------
 def _annotate_with_pysam():
     bed_file = request.files.get("file")
     gtf_bgz  = request.files.get("gtf_bgz")
@@ -202,11 +239,14 @@ def _annotate_with_pysam():
                 continue
 
             candidates.sort(key=lambda x:x["priority_score"],reverse=True)
-            # “best_all” default
-            top=candidates[0]["priority_score"]
-            picks = candidates if request.form.get("ambiguities","best_all")=="all" else \
-                    [candidates[0]] if request.form.get("ambiguities")=="best_one" else \
-                    [c for c in candidates if abs(c["priority_score"]-top)<1e-6]
+            mode = request.form.get("ambiguities","best_all")
+            if mode == "all":
+                picks = candidates
+            elif mode == "best_one":
+                picks = [candidates[0]]
+            else:  # best_all
+                top = candidates[0]["priority_score"]
+                picks = [c for c in candidates if abs(c["priority_score"]-top) < 1e-6]
 
             for c in picks:
                 rows.append(c)
@@ -216,6 +256,7 @@ def _annotate_with_pysam():
 
         outpath = os.path.join(tempfile.gettempdir(), "annotations_upload_gtf.csv")
         pd.DataFrame(rows).to_csv(outpath, index=False)
+
         summary = {"unique_genes": len(gene_set), "by_biotype": dict(biotype_counter)}
         return jsonify({"rows": rows, "summary": summary, "csv_download_path": outpath})
 
@@ -233,27 +274,11 @@ def _open_gtf_pair(gtf_file, tbi_file):
     tbx = pysam.TabixFile(gtf_path)
     return tbx, tmpdir
 
-# ----------------------- Demo fallback (no pysam) -----------------------
-def _annotate_demo():
-    bed = request.files.get("file")
-    if not bed:
-        return json_error("No BED file uploaded")
-    intervals = parse_bed(bed.read())
-    # fabricate stable fake annotations (UI demo)
-    rows=[]; biotypes=["protein_coding","lincRNA","antisense","sense_intronic","processed_transcript"]
-    for i,(c,s,e) in enumerate(intervals):
-        rows.append({
-            "input_chr": c, "input_start": s, "input_end": e,
-            "gene": f"ENSG_FAKE_{i}", "strand": "+" if i%2==0 else "-",
-            "feature_biotype": biotypes[i % len(biotypes)],
-            "ensembl_id": f"ENST_FAKE_{i}", "hugo": f"MOCK{i%7}",
-            "tx_overlap_pct": 80.0 - (i%5)*3, "exon_overlap_pct": 45.0, "cds_overlap_pct": 20.0,
-            "priority_score": 99.0 - i,
-        })
-    summary = {
-        "unique_genes": len(set(r["hugo"] for r in rows)),
-        "by_biotype": dict(Counter(r["feature_biotype"] for r in rows))
-    }
-    outpath = os.path.join(tempfile.gettempdir(), "annotations_demo.csv")
-    pd.DataFrame(rows).to_csv(outpath, index=False)
-    return jsonify({"rows": rows, "summary": summary, "csv_download_path": outpath})
+
+# ----------------------- Download -----------------------
+@app.get("/download")
+def download():
+    path = request.args.get("path")
+    if not path or not os.path.exists(path):
+        return jsonify({"error": "file not found"}), 404
+    return send_file(path, as_attachment=True, download_name="annotations.csv")
