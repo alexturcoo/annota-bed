@@ -6,6 +6,10 @@
   <em>Fast and easy annotation of BED files for contextual genomic analysis</em>
 </p>
 
+<p align="center">
+  <img src="imgs/img1.png" alt="annota-bed demo" width="700">
+</p>
+
 ---
 
 ## Attribution
@@ -91,7 +95,7 @@ pip install -r requirements.txt
 pnpm run flask-dev
 
 # Start Next.js frontend
-pnpm dev'''
+pnpm dev
 
 Open http://localhost:3000 in your browser.
 The Flask API will run at http://127.0.0.1:5328.
