@@ -2,7 +2,8 @@
 
 import React, { useState } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, Label,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  CartesianGrid, Cell, Label,
 } from "recharts";
 
 type Row = {
@@ -70,8 +71,15 @@ export default function Home() {
     ? Object.entries(summary.by_biotype).map(([biotype, count]) => ({ biotype, count }))
     : [];
 
-  const CHROM_ORDER = ["1","2","3","4","5","6","7","8","9","10","11","12",
-                       "13","14","15","16","17","18","19","20","21","22","X","Y"];
+  const CHROM_ORDER = [
+    "1","2","3","4","5","6","7","8","9","10","11","12",
+    "13","14","15","16","17","18","19","20","21","22","X","Y"
+  ];
+  const chromIndex: Record<string, number> = CHROM_ORDER.reduce((acc, c, i) => {
+    acc[c] = i;
+    return acc;
+  }, {} as Record<string, number>);
+
   const chrCounts = rows.reduce<Record<string, number>>((acc, r) => {
     const c = (r.input_chr || "").replace(/^chr/i, "");
     acc[c] = (acc[c] || 0) + 1;
@@ -83,6 +91,16 @@ export default function Home() {
 
   const geneNames = Array.from(new Set(rows.map((r) => r.hugo || r.gene || "").filter(Boolean))).slice(0, 30);
   const BIOTYPE_COLORS = ["#4f46e5","#06b6d4","#10b981","#f59e0b","#ef4444","#a855f7","#22c55e","#eab308","#3b82f6","#f97316"];
+
+  // ===== Sort rows by chromosome + start =====
+  const sortedRows = [...rows].sort((a, b) => {
+    const chrA = (a.input_chr || "").replace(/^chr/i, "");
+    const chrB = (b.input_chr || "").replace(/^chr/i, "");
+    const idxA = chromIndex[chrA] ?? 999;
+    const idxB = chromIndex[chrB] ?? 999;
+    if (idxA !== idxB) return idxA - idxB;
+    return (a.input_start || 0) - (b.input_start || 0);
+  });
 
   return (
     <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto">
@@ -166,7 +184,7 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Two plots side-by-side (bigger boxes + unclipped labels) */}
+          {/* Two plots side-by-side */}
           <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2">
             {/* Biotype */}
             <div className="border rounded-2xl p-4 bg-white h-[32rem] min-h-[28rem]">
@@ -230,7 +248,7 @@ export default function Home() {
       )}
 
       {/* Results table */}
-      {rows.length > 0 && (
+      {sortedRows.length > 0 && (
         <section className="mt-8">
           <h2 className="text-xl font-semibold mb-3">Results</h2>
           <div className="border rounded-2xl bg-white max-h-[520px] overflow-y-auto">
@@ -246,7 +264,7 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => (
+                {sortedRows.map((r, i) => (
                   <tr key={i} className="odd:bg-white even:bg-gray-50">
                     <td className="p-2">{r.input_chr}</td>
                     <td className="p-2">{r.input_start}</td>
