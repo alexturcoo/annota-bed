@@ -103,7 +103,7 @@ export default function Home() {
   });
 
   return (
-    <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto">
+    <main className="min-h-screen px-6 py-10 max-w-7xl mx-auto bg-slate-900 text-white">
       <h1 className="text-3xl font-semibold mb-2">annota-bed</h1>
       <p className="italic text-gray-500 mb-6">
         Fast and easy annotation of BED files for contextual genomic analysis
