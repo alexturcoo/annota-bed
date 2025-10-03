@@ -31,8 +31,7 @@ def attr_dict(attr_str: str) -> dict:
     d = {}
     for field in attr_str.strip().split(";"):
         field = field.strip()
-        if not field:
-            continue
+        if not field: continue
         if " " in field:
             k, v = field.split(" ", 1)
             d[k] = v.strip().strip('"')
@@ -41,8 +40,9 @@ def attr_dict(attr_str: str) -> dict:
 def overlap_len(a1,a2,b1,b2):
     return max(0, min(a2, b2) - max(a1, b1))
 
-# ---- priority scoring ----
+# ---- priority scoring (matches your rules minus TSL/cancer flag) ----
 def biotype_rank(bt: str) -> int:
+    # protein_coding > others > *RNA > *_decay > sense_* > antisense > translated_* > transcribed_*
     if not bt: return 5
     if bt == "protein_coding": return 0
     if bt.endswith("RNA"): return 2
@@ -54,6 +54,7 @@ def biotype_rank(bt: str) -> int:
     return 5
 
 def score_transcript(tx_pct, cds_pct, exon_pct, bt, has_hugo, tx_len):
+    # 1) overlap% transcript; 2) CDS; 3) exons; 4) biotype; 6) HUGO; 8) tx size
     s = 3.0 * tx_pct + 2.0 * cds_pct + 1.5 * exon_pct
     s += max(0, 50 - 10 * biotype_rank(bt))
     if has_hugo: s += 5.0
@@ -63,34 +64,45 @@ def score_transcript(tx_pct, cds_pct, exon_pct, bt, has_hugo, tx_len):
         except: pass
     return s
 
-def open_gtf_from_upload(gtf_file) -> tuple:
+def open_gtf_from_upload(gtf_file, tbi_file) -> tuple[pysam.TabixFile, str]:
+    """
+    Save uploaded .gtf.bgz and .tbi under the SAME basename in a temp dir.
+    Return (TabixFile, tmpdir). We clean tmpdir at the end of the request.
+    """
     if not gtf_file:
         raise ValueError("Missing GTF BGZF file (.gtf.bgz).")
+    if not tbi_file:
+        raise ValueError("Missing Tabix index (.tbi) for the uploaded GTF.")
 
     tmpdir = tempfile.mkdtemp(prefix="gtf_")
-    gtf_path = os.path.join(tmpdir, f"user_{uuid.uuid4().hex}.gtf.bgz")
-    gtf_file.save(gtf_path)
+    base = f"user_{uuid.uuid4().hex}.gtf.bgz"
+    gtf_path = os.path.join(tmpdir, base)
+    tbi_path = gtf_path + ".tbi"
 
-    # pysam will look for gtf_path + ".tbi" automatically
+    gtf_file.save(gtf_path)
+    tbi_file.save(tbi_path)
+
+    # Open to validate pair is good
     tbx = pysam.TabixFile(gtf_path)
     return tbx, tmpdir
 
 # ============ routes ============
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": "single-upload"}
+    return {"status": "ok", "mode": "two-file-upload"}
 
 @app.post("/annotate")
 def annotate():
     bed_file = request.files.get("file")
     gtf_bgz  = request.files.get("gtf_bgz")
-    ambiguities = request.form.get("ambiguities", "best_all")
+    gtf_tbi  = request.files.get("gtf_tbi")
+    ambiguities = request.form.get("ambiguities", "best_all")  # best_one | best_all | all
 
     if not bed_file:
         return jsonify({"error": "No BED file uploaded"}), 400
 
     try:
-        tbx, tmpdir = open_gtf_from_upload(gtf_bgz)
+        tbx, tmpdir = open_gtf_from_upload(gtf_bgz, gtf_tbi)
     except Exception as e:
         return jsonify({"error": f"GTF open failed: {e}"}), 400
 
@@ -108,7 +120,7 @@ def annotate():
                 except ValueError:
                     continue
                 for line in it:
-                    parts = line.split("\t")
+                    parts = line.rstrip("\n").split("\t")
                     if len(parts) < 9: continue
                     _seq,_src,ftype,fstart,fend,_s,strand,_ph,attrs = parts
                     fstart, fend = int(fstart), int(fend)
@@ -128,8 +140,10 @@ def annotate():
                             "biotype":biotype,"strand":strand,
                             "tstart":fstart,"tend":fend
                         }
-                    elif ftype=="exon" and tx_id: exons_by_tx[tx_id].append((fstart,fend))
-                    elif ftype=="CDS"  and tx_id: cds_by_tx[tx_id].append((fstart,fend))
+                    elif ftype=="exon" and tx_id:
+                        exons_by_tx[tx_id].append((fstart,fend))
+                    elif ftype=="CDS" and tx_id:
+                        cds_by_tx[tx_id].append((fstart,fend))
                 if found: break
 
             candidates=[]
@@ -168,9 +182,11 @@ def annotate():
                 continue
 
             candidates.sort(key=lambda x:x["priority_score"],reverse=True)
-            if ambiguities=="all": picks=candidates
-            elif ambiguities=="best_one": picks=[candidates[0]]
-            else: # best_all
+            if ambiguities=="all":
+                picks=candidates
+            elif ambiguities=="best_one":
+                picks=[candidates[0]]
+            else:  # best_all
                 top=candidates[0]["priority_score"]
                 picks=[c for c in candidates if abs(c["priority_score"]-top)<1e-6]
 
@@ -187,12 +203,12 @@ def annotate():
         return jsonify({"rows":rows,"summary":summary,"csv_download_path":outpath})
 
     finally:
-        try: shutil.rmtree(tmpdir,ignore_errors=True)
+        try: shutil.rmtree(tmpdir, ignore_errors=True)
         except: pass
 
 @app.get("/download")
 def download():
-    path=request.args.get("path")
+    path = request.args.get("path")
     if not path or not os.path.exists(path):
-        return jsonify({"error":"file not found"}),404
-    return send_file(path,as_attachment=True,download_name="annotations.csv")
+        return jsonify({"error":"file not found"}), 404
+    return send_file(path, as_attachment=True, download_name="annotations.csv")
