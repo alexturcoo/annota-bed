@@ -233,7 +233,7 @@ export default function Home() {
       {rows.length > 0 && (
         <section className="mt-8">
           <h2 className="text-xl font-semibold mb-3">Results</h2>
-          <div className="border rounded-2xl bg-white max-h=[520px] overflow-y-auto">
+          <div className="border rounded-2xl bg-white max-h-[520px] overflow-y-auto">
             <table className="min-w-full text-sm text-gray-800">
               <thead className="bg-gray-100 sticky top-0 z-10">
                 <tr>
