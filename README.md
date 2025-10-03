@@ -1,78 +1,97 @@
 <p align="center">
-  <a href="https://nextjs-flask-starter.vercel.app/">
-    <img src="https://assets.vercel.com/image/upload/v1588805858/repositories/vercel/logo.png" height="96">
-    <h3 align="center">Next.js Flask Starter</h3>
-  </a>
+  <h1 align="center">annota-bed</h1>
 </p>
 
-<p align="center">Simple Next.js boilerplate that uses <a href="https://flask.palletsprojects.com/">Flask</a> as the API backend.</p>
+<p align="center">
+  <em>Fast and easy annotation of BED files for contextual genomic analysis</em>
+</p>
 
-<br/>
+---
 
-## Introduction
+## Attribution
 
-This is a hybrid Next.js + Python app that uses Next.js as the frontend and Flask as the API backend. One great use case of this is to write Next.js apps that use Python AI libraries on the backend.
+This project was adapted from [vladsavelyev/bed_annotation](https://github.com/vladsavelyev/bed_annotation) and extended into a full-stack tool with a Next.js frontend and Flask backend.
+
+---
+
+## Overview
+
+This tool was created as a fun project to solve a recurring problem I faced:  
+**Annotating genomic motifs from various reference genomes directly from a simple BED file**.  
+
+Instead of manually intersecting BED files with GTFs and parsing outputs, `annota-bed` provides an interactive web interface where you can upload:
+
+- A **BED file** (`chr`, `start`, `end`)
+- A **reference genome GTF** (Ensembl, bgzip + tabix formatted)
+- The corresponding **tabix index (.tbi)**
+
+The tool then returns **gene- and transcript-level annotations**, interactive plots, and a downloadable CSV.
+
+---
 
 ## How It Works
 
-The Python/Flask server is mapped into to Next.js app under `/api/`.
+1. **User Input**
+   - Upload a BED file with 3 columns: chromosome, start, end.
+   - Upload a tabix-indexed **GTF** (`.gtf.bgz`) and its **.tbi index** for the chosen reference genome.
+   - Ensembl-formatted GTFs for hg19 and hg38 are included in this repo for convenience.
 
-This is implemented using [`next.config.js` rewrites](https://github.com/vercel/examples/blob/main/python/nextjs-flask/next.config.js) to map any request to `/api/:path*` to the Flask API, which is hosted in the `/api` folder.
+2. **Backend (Flask)**
+   - The backend uses [pysam](https://pysam.readthedocs.io/en/latest/) to query the GTF in genomic intervals.
+   - Each BED region is intersected against transcripts, exons, and CDS features.
 
-On localhost, the rewrite will be made to the `127.0.0.1:5328` port, which is where the Flask server is running.
+3. **Annotation Priority**
+   If multiple overlapping transcripts/features are found, the tool applies a **priority system**:
+   - Overlap % with transcript (higher is better)
+   - Overlap % with CDS
+   - Overlap % with exons
+   - Biotype (protein_coding > others > \*RNA > \*_decay > sense\_* > antisense > translated\_* > transcribed\_*)
+   - Presence of HUGO gene symbol (preferred over only Ensembl IDs)
+   - Transcript size (longer preferred)
 
-In production, the Flask server is hosted as [Python serverless functions](https://vercel.com/docs/concepts/functions/serverless-functions/runtimes/python) on Vercel.
+   The result is the "best" annotation for each region.
 
-## Demo
+4. **Frontend (Next.js + Recharts)**
+   - Plots distribution of annotated biotypes
+   - Plots distribution of regions across chromosomes
+   - Displays example gene names
+   - Interactive results table with scrolling
+   - Downloadable CSV with full results
 
-https://nextjs-flask-starter.vercel.app/
+---
 
-## Deploy Your Own
+## User Options
 
-You can clone & deploy it to Vercel with one click:
+- **Ambiguities**  
+  - `best_all` (default): Keeps all top matches if tied by priority.  
+  - `best_one`: Returns only the single best match.  
+  - `all`: Returns all overlapping annotations (no filtering).
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?demo-title=Next.js%20Flask%20Starter&demo-description=Simple%20Next.js%20boilerplate%20that%20uses%20Flask%20as%20the%20API%20backend.&demo-url=https%3A%2F%2Fnextjs-flask-starter.vercel.app%2F&demo-image=%2F%2Fimages.ctfassets.net%2Fe5382hct74si%2F795TzKM3irWu6KBCUPpPz%2F44e0c6622097b1eea9b48f732bf75d08%2FCleanShot_2023-05-23_at_12.02.15.png&project-name=Next.js%20Flask%20Starter&repository-name=nextjs-flask-starter&repository-url=https%3A%2F%2Fgithub.com%2Fvercel%2Fexamples%2Ftree%2Fmain%2Fpython%2Fnextjs-flask&from=vercel-examples-repo)
+- **Custom GTF Uploads**  
+  Users can swap in any **Ensembl-style GTF** (properly sorted and bgzip-tabix indexed). This makes the tool flexible for other organisms and genome builds.
 
-## Developing Locally
+---
 
-You can clone & create this repo with the following command
+## Running Locally
+
+Clone the repo:
 
 ```bash
-npx create-next-app nextjs-flask --example "https://github.com/vercel/examples/tree/main/python/nextjs-flask"
-```
+git clone https://github.com/<your-username>/annota-bed.git
+cd annota-bed
 
-## Getting Started
-
-First, install the dependencies:
-
-```bash
-npm install
-# or
-yarn
-# or
+# Frontend
 pnpm install
-```
+# or npm install / yarn install
 
-Then, run the development server:
+# Backend (Python)
+pip install -r requirements.txt
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-```
+# Start Flask backend
+pnpm run flask-dev
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+# Start Next.js frontend
+pnpm dev'''
 
-The Flask server will be running on [http://127.0.0.1:5328](http://127.0.0.1:5328) – feel free to change the port in `package.json` (you'll also need to update it in `next.config.js`).
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [Flask Documentation](https://flask.palletsprojects.com/en/1.1.x/) - learn about Flask features and API.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+Open http://localhost:3000 in your browser.
+The Flask API will run at http://127.0.0.1:5328.
