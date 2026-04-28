@@ -7,7 +7,11 @@
 </p>
 
 <p align="center">
-  <img src="imgs/img1.png" alt="annota-bed demo" width="700">
+  <img src="imgs/img1.png" alt="annota-bed input and summary interface" width="820">
+</p>
+
+<p align="center">
+  <img src="imgs/img2.png" alt="annota-bed cCRE enrichment and results interface" width="820">
 </p>
 
 ---
