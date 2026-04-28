@@ -14,6 +14,10 @@
   <img src="imgs/img2.png" alt="annota-bed cCRE enrichment and results interface" width="820">
 </p>
 
+<p align="center">
+  <img src="imgs/img3.png" alt="annota-bed detailed results table" width="820">
+</p>
+
 ---
 
 ## Attribution
