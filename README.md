@@ -18,13 +18,14 @@ This project was inspired by [vladsavelyev/bed_annotation](https://github.com/vl
 
 ## Overview
 
-`annota-bed` is a lightweight full-stack tool for annotating BED files against various reference genome annotations.  
+`annota-bed` is a lightweight full-stack tool for annotating BED files against local reference genome annotations.  
 
-Instead of manually intersecting BEDs with GTFs and parsing outputs, `annota-bed` provides an interactive web interface where you can upload:
+Instead of manually intersecting BEDs with GTFs and parsing outputs, `annota-bed` provides an interactive web interface where you can:
 
-- A **BED file** (`chr`, `start`, `end`)  
-- A **reference genome GTF** (gtf format, bgzip + tabix indexed)  
-- The corresponding **tabix index (.tbi)**  
+- Upload a **BED file** (`chr`, `start`, `end`)  
+- Select a built-in reference genome from the local `data/` directory  
+- Optionally upload a custom bgzipped/tabix-indexed GTF  
+- Optionally intersect GRCh38 regions with the ENCODE cCRE catalog  
 
 The tool then returns **gene- and transcript-level annotations**, interactive plots, and a downloadable CSV.  
 
@@ -42,18 +43,21 @@ We currently support three reference genomes out-of-the-box, all bgzipped and ta
 
 Users can seamlessly switch between hg19, hg38, and CHM13 when annotating motifs, enabling cross-genome comparisons.  
 
+For GRCh38, the app can also intersect user regions against `GRCh38-cCREs.bed`. This is optional and can be run only on regions that did not get a gene hit, or across all input regions.
+
 ---
 
 ## How It Works
 
 1. **User Input**
    - Upload a BED file with 3 columns: chromosome, start, end.  
-   - Upload a tabix-indexed GTF (`.gtf.bgz`) and its `.tbi` index for the chosen reference genome.  
-   - Pre-packaged GTFs for hg19, hg38, and CHM13 are included.  
+   - Choose hg19, hg38, or CHM13 from the installed references.  
+   - For non-packaged references, enable custom GTF upload and provide a tabix-indexed GTF (`.gtf.bgz`) plus its `.tbi` index.  
 
 2. **Backend (Flask)**
    - Uses [pysam](https://pysam.readthedocs.io/en/latest/) to query GTF annotations in genomic intervals.  
    - Each BED region is intersected against transcripts, exons, and CDS features.  
+   - cCRE mode uses the local GRCh38 cCRE BED as a regulatory-region follow-up when requested.  
 
 3. **Annotation Priority**
    If multiple overlapping transcripts/features are found, the tool applies a priority system:
@@ -65,10 +69,10 @@ Users can seamlessly switch between hg19, hg38, and CHM13 when annotating motifs
    - Transcript length  
 
 4. **Frontend (Next.js + Recharts)**
-   - Plots annotated biotypes  
-   - Chromosome-wise distribution plots  
-   - Displays gene names and IDs  
-   - Interactive results table  
+   - Shows summary metrics for input regions, gene hits, overlap classes, and cCRE intersections  
+   - Plots functional classes, biotypes, chromosome distribution, and cCRE catalog-relative composition  
+   - Displays gene names, transcript IDs, cCRE IDs, and overlap percentages  
+   - Provides a searchable results table  
    - Exportable CSV  
 
 ---
@@ -82,6 +86,12 @@ Users can seamlessly switch between hg19, hg38, and CHM13 when annotating motifs
 
 - **Custom GTF Uploads**  
   Users can upload any **Ensembl-style GTF** (properly sorted, bgzipped, tabix-indexed) for other organisms/genomes.  
+
+- **cCRE Intersect**
+  - `Off` (default): Runs gene/transcript annotation only.
+  - `Unannotated regions`: Intersects only regions without a gene/transcript hit against GRCh38 cCREs.
+  - `All regions`: Intersects every input region against GRCh38 cCREs.
+  - Optional permutation enrichment preserves input interval widths, randomizes them across hg38 primary chromosomes, and reports observed regions, expected regions, fold enrichment, and empirical p-value for each cCRE class.
 
 ---
 
@@ -100,8 +110,5 @@ pnpm install
 # Backend (Python)
 pip install -r requirements.txt
 
-# Start Flask backend
-pnpm run flask-dev
-
-# Start Next.js frontend
+# Start Flask + Next.js together
 pnpm dev
