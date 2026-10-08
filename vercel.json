@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{data/**,GRCh38-cCREs.bed,imgs/**,node_modules/**,.next/**}"
+    }
+  }
+}

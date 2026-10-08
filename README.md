@@ -78,7 +78,7 @@ For GRCh38, the app can also intersect user regions against `GRCh38-cCREs.bed`. 
 
 4. **Frontend (Next.js + Recharts)**
    - Shows summary metrics for input regions, gene hits, overlap classes, and cCRE intersections  
-   - Plots functional classes, biotypes, chromosome distribution, and cCRE catalog-relative composition  
+   - Plots functional classes, chromosome distribution, and optional cCRE permutation enrichment
    - Displays gene names, transcript IDs, cCRE IDs, and overlap percentages  
    - Provides a searchable results table  
    - Exportable CSV  
@@ -120,3 +120,26 @@ pip install -r requirements.txt
 
 # Start Flask + Next.js together
 pnpm dev
+```
+
+## Deployment
+
+Deploy this repository to Vercel using its Next.js preset. The Python function
+runs real annotation with pysam. `vercel.json` excludes the large reference
+datasets from the function bundle to stay below Vercel's size limit.
+
+On the first request, the function downloads the selected GTF and index from
+GitHub LFS into `/tmp`. It downloads the cCRE catalog only when cCRE analysis
+is selected. Assets use the fixed repository revision `92dbe2d` for reproducible
+references, and subsequent requests on the same instance reuse the cache.
+Cold requests take longer, and very large analyses can exceed the configured
+300-second function timeout. The temporary cache disappears when Vercel
+recycles an instance.
+
+For local use, run `git lfs pull` to install the reference files. The backend
+uses those files directly. Missing Python dependencies produce an error;
+annotation never silently substitutes fabricated results.
+
+Optionally, set `ANNOTATION_API_URL` to a separately hosted Flask server's HTTPS
+origin (without an `/api` suffix) before building Next.js. This forwards API
+requests to that server and is useful for analyses exceeding serverless limits.

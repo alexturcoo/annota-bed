@@ -7,12 +7,30 @@ import os
 import random
 import shutil
 import tempfile
+import threading
 import uuid
+from urllib.request import urlopen
 from collections import Counter, defaultdict
 
 from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__)
+
+
+class ApiPrefixMiddleware:
+    """Accept both direct Flask paths and Vercel's /api-prefixed paths."""
+
+    def __init__(self, application):
+        self.application = application
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path.startswith("/api/"):
+            environ["PATH_INFO"] = path[4:]
+        return self.application(environ, start_response)
+
+
+app.wsgi_app = ApiPrefixMiddleware(app.wsgi_app)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -67,17 +85,52 @@ REFERENCE_GENOMES = {
 for ref in REFERENCE_GENOMES.values():
     ref["tbi"] = ref["gtf"] + ".tbi"
 
-# Vercel/serverless cannot reliably ship and query these native/data-heavy files.
+# Download large references on demand rather than bundling them in the function.
 IS_VERCEL = os.getenv("VERCEL") == "1"
+ASSET_BASE_URL = "https://media.githubusercontent.com/media/alexturcoo/annota-bed/92dbe2d/"
+ASSET_CACHE_DIR = os.path.join(tempfile.gettempdir(), "annota-bed-references-v1")
+_ASSET_LOCK = threading.Lock()
 
 HAS_PYSAM = False
-if not IS_VERCEL:
-    try:
-        import pysam
+try:
+    import pysam
 
-        HAS_PYSAM = True
-    except Exception:
-        HAS_PYSAM = False
+    HAS_PYSAM = True
+except ImportError:
+    pass
+
+
+def _ensure_asset(relative_path):
+    local_path = os.path.join(BASE_DIR, relative_path)
+    if os.path.isfile(local_path):
+        with open(local_path, "rb") as handle:
+            if not handle.read(80).startswith(b"version https://git-lfs.github.com/spec/v1"):
+                return local_path
+    if not IS_VERCEL:
+        raise FileNotFoundError(f"Missing reference {relative_path}; run git lfs pull.")
+
+    cache_path = os.path.join(ASSET_CACHE_DIR, relative_path)
+    with _ASSET_LOCK:
+        if os.path.isfile(cache_path):
+            return cache_path
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        staging_path = cache_path + ".part"
+        try:
+            with urlopen(ASSET_BASE_URL + relative_path, timeout=120) as response:
+                expected_size = response.headers.get("Content-Length")
+                with open(staging_path, "wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1024 * 1024)
+            if expected_size and os.path.getsize(staging_path) != int(expected_size):
+                raise ValueError("Reference download was incomplete")
+            with open(staging_path, "rb") as handle:
+                prefix = handle.read(80)
+            if not prefix or prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                raise ValueError("Reference download did not contain the asset")
+            os.replace(staging_path, cache_path)
+        finally:
+            if os.path.exists(staging_path):
+                os.remove(staging_path)
+    return cache_path
 
 _CCRE_INDEX = None
 
@@ -234,9 +287,9 @@ def reference_payload():
                 "key": key,
                 "label": ref["label"],
                 "description": ref["description"],
-                "available": os.path.exists(ref["gtf"]) and os.path.exists(ref["tbi"]),
+                "available": IS_VERCEL or (os.path.exists(ref["gtf"]) and os.path.exists(ref["tbi"])),
                 "gtf": os.path.basename(ref["gtf"]),
-                "supports_ccre": key == "hg38" and os.path.exists(CCRE_PATH),
+                "supports_ccre": key == "hg38" and (IS_VERCEL or os.path.exists(CCRE_PATH)),
             }
         )
     return refs
@@ -246,14 +299,14 @@ def reference_payload():
 @app.get("/health")
 def health():
     if IS_VERCEL:
-        mode = "serverless-demo"
+        mode = "serverless-pysam" if HAS_PYSAM else "missing-pysam"
     else:
-        mode = "full-pysam" if HAS_PYSAM else "demo-fallback-local"
+        mode = "full-pysam" if HAS_PYSAM else "missing-pysam"
     return {
         "status": "ok",
         "mode": mode,
         "references": reference_payload(),
-        "ccre_available": os.path.exists(CCRE_PATH),
+        "ccre_available": IS_VERCEL or os.path.exists(CCRE_PATH),
     }
 
 
@@ -272,10 +325,10 @@ def annotate():
       - Custom GTF/TBI uploads remain available for non-packaged references.
 
     Vercel/serverless mode:
-      - Returns deterministic demo annotations so the UI still works.
+      - Downloads the requested references into the function's temporary cache.
     """
-    if IS_VERCEL or not HAS_PYSAM:
-        return _annotate_demo()
+    if not HAS_PYSAM:
+        return json_error("Install the Python requirements (including pysam) to run annotation.", 503)
     return _annotate_with_pysam()
 
 
@@ -392,10 +445,13 @@ def _annotate_ccres(
     num_permutations=1000,
     seed=42,
 ):
+    global CCRE_PATH
     if ccre_mode == "off":
         return {}, _empty_ccre_summary("off", False, os.path.exists(CCRE_PATH), "cCRE analysis disabled")
     if genome != "hg38":
         return {}, _empty_ccre_summary(ccre_mode, True, os.path.exists(CCRE_PATH), "cCRE catalog is GRCh38 only")
+    if IS_VERCEL:
+        CCRE_PATH = _ensure_asset("GRCh38-cCREs.bed")
     if not os.path.exists(CCRE_PATH):
         return {}, _empty_ccre_summary(ccre_mode, True, False, "GRCh38 cCRE BED file not found")
 
@@ -651,12 +707,15 @@ def _write_csv(rows):
 
 def _response_payload(rows, intervals, ccre_by_region, ccre_summary, csv_path, genome, source):
     ref = REFERENCE_GENOMES.get(genome, {})
+    with open(csv_path, encoding="utf-8") as handle:
+        csv_content = handle.read()
     return jsonify(
         {
             "rows": rows,
             "summary": _build_summary(intervals, rows, ccre_by_region),
             "ccre": ccre_summary,
             "csv_download_path": csv_path,
+            "csv_content": csv_content,
             "reference": {
                 "genome": genome,
                 "label": ref.get("label", "Custom reference"),
@@ -922,6 +981,11 @@ def _open_builtin_reference(genome):
     if genome not in REFERENCE_GENOMES:
         raise ValueError(f"Unknown reference genome: {genome}")
     ref = REFERENCE_GENOMES[genome]
+    if IS_VERCEL:
+        relative_path = "data/" + os.path.basename(ref["gtf"])
+        gtf_path = _ensure_asset(relative_path)
+        _ensure_asset(relative_path + ".tbi")
+        return pysam.TabixFile(gtf_path)
     if not os.path.exists(ref["gtf"]) or not os.path.exists(ref["tbi"]):
         raise FileNotFoundError(f"Missing built-in reference files for {ref['label']}")
     return pysam.TabixFile(ref["gtf"])

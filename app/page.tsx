@@ -63,6 +63,17 @@ type CcreEnrichment = {
   region_fold: number | null;
 };
 
+type CcreChartPoint = {
+  name: string;
+  fold: number;
+  observed?: number;
+  expected?: number;
+  recordFold?: number;
+  count?: number;
+  regions?: number;
+  p: number | null;
+};
+
 type CcreSummary = {
   mode: "off" | "unannotated" | "all";
   enabled: boolean;
@@ -309,7 +320,9 @@ export default function Home() {
       setSummary(data.summary || null);
       setCcre(data.ccre || null);
       setReference(data.reference || null);
-      setCsvPath(data.csv_download_path || null);
+      setCsvPath(data.csv_content
+        ? `data:text/csv;charset=utf-8,${encodeURIComponent(data.csv_content)}`
+        : null);
       setQuery("");
       setOnlyCcre(false);
     } catch (err: any) {
@@ -335,7 +348,7 @@ export default function Home() {
     return [...known, ...extra].filter((item) => item.value > 0);
   }, [summary]);
 
-  const ccreChartData = useMemo(() => {
+  const ccreChartData = useMemo<CcreChartPoint[]>(() => {
     if (!ccre) return [];
     if (ccre.permutation?.results?.length) {
       return ccre.permutation.results
@@ -694,7 +707,8 @@ export default function Home() {
                   <h3 className="text-sm font-semibold text-slate-900">Genes</h3>
                   {csvPath && (
                     <a
-                      href={`/api/download?path=${encodeURIComponent(csvPath)}`}
+                      href={csvPath}
+                      download="annotations.csv"
                       className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                     >
                       Download CSV
